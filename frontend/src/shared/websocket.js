@@ -7,10 +7,9 @@ let socket = null
 let messageHandler = null
 
 export function connectWebSocket(roomId, memberId, onMessage) {
-  const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
-  const host = location.hostname
-  const port = import.meta.env.VITE_WEBSOCKET_PORT || location.port || (location.protocol === 'https:' ? 443 : 80)
-  const url = `${protocol}://${host}:${port}/ws/${roomId}/${memberId}`
+  const BACKEND = import.meta.env.VITE_API_URL
+  const WS_BASE = BACKEND.replace(/^https/, "wss").replace(/^http/, "ws")
+  const url = `${WS_BASE}/ws/${roomId}/${memberId}`
 
   socket = new WebSocket(url)
   messageHandler = onMessage
