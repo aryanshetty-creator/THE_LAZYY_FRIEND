@@ -9,7 +9,7 @@ let messageHandler = null
 export function connectWebSocket(roomId, memberId, onMessage) {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
   const host = location.hostname
-  const port = 8000 // FastAPI backend port
+  const port = import.meta.env.VITE_WEBSOCKET_PORT || location.port || (location.protocol === 'https:' ? 443 : 80)
   const url = `${protocol}://${host}:${port}/ws/${roomId}/${memberId}`
 
   socket = new WebSocket(url)
