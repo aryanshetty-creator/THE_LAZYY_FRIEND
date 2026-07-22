@@ -1,4 +1,4 @@
-const API_BASE = `http://${location.hostname}:8000/api`
+const API_BASE = `${import.meta.env.VITE_API_URL}/api`
 
 export async function createRoom(name, destinationLat, destinationLng, destinationName) {
   const res = await fetch(`${API_BASE}/rooms/create`, {
