@@ -9,7 +9,15 @@
     </div>
     <p v-if="shareMessage" class="notice">{{ shareMessage }}</p>
 
-    <div ref="mapEl" class="map-container"></div>
+    <div class="map-stage">
+      <div ref="mapEl" class="map-container"></div>
+      <div class="pan-controls" aria-label="Move map">
+        <button class="pan-btn pan-up" title="Move map up" @click="panMap(0, -160)">↑</button>
+        <button class="pan-btn pan-left" title="Move map left" @click="panMap(-160, 0)">←</button>
+        <button class="pan-btn pan-right" title="Move map right" @click="panMap(160, 0)">→</button>
+        <button class="pan-btn pan-down" title="Move map down" @click="panMap(0, 160)">↓</button>
+      </div>
+    </div>
 
     <div class="members-list">
       <h3>Members</h3>
@@ -337,7 +345,14 @@ const destIcon = L.divIcon({
 
 onMounted(() => {
   // Fallback center when live geolocation has not arrived yet.
-  map = L.map(mapEl.value).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM)
+  map = L.map(mapEl.value, {
+    dragging: true,
+    scrollWheelZoom: true,
+    touchZoom: true,
+    doubleClickZoom: true,
+    boxZoom: true,
+    keyboard: true,
+  }).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM)
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap',
   }).addTo(map)
@@ -484,6 +499,11 @@ function copyInvite() {
 function isLocalOnlyHost() {
   return ['localhost', '127.0.0.1', '0.0.0.0'].includes(location.hostname)
 }
+
+function panMap(x, y) {
+  if (!map) return
+  map.panBy([x, y], { animate: true, duration: 0.25 })
+}
 </script>
 
 <style scoped>
@@ -523,9 +543,65 @@ function isLocalOnlyHost() {
 .share-btn:hover {
   background: #3367D6;
 }
-.map-container {
+.map-stage {
   flex: 1;
   min-height: 300px;
+  position: relative;
+}
+.map-container {
+  height: 100%;
+  width: 100%;
+  cursor: grab;
+}
+.map-container:active {
+  cursor: grabbing;
+}
+.pan-controls {
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+  grid-template-rows: repeat(3, 36px);
+  gap: 6px;
+  left: 14px;
+  position: absolute;
+  top: 84px;
+  z-index: 700;
+}
+.pan-btn {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  color: #111827;
+  cursor: pointer;
+  display: flex;
+  font-size: 18px;
+  font-weight: 800;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+.pan-btn:hover {
+  background: #f3f4f6;
+}
+.pan-up {
+  grid-column: 2;
+  grid-row: 1;
+}
+.pan-left {
+  grid-column: 1;
+  grid-row: 2;
+}
+.pan-right {
+  grid-column: 3;
+  grid-row: 2;
+}
+.pan-down {
+  grid-column: 2;
+  grid-row: 3;
+}
+.map-stage .map-container {
+  flex: 1;
 }
 .members-list {
   background: #fff;

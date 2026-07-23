@@ -231,7 +231,14 @@ watch(pickOnMap, async (val) => {
   if (val) {
     await nextTick()
     if (!pickMap && pickMapEl.value) {
-      pickMap = L.map(pickMapEl.value).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM)
+      pickMap = L.map(pickMapEl.value, {
+        dragging: true,
+        scrollWheelZoom: true,
+        touchZoom: true,
+        doubleClickZoom: true,
+        boxZoom: true,
+        keyboard: true,
+      }).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM)
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap',
       }).addTo(pickMap)
