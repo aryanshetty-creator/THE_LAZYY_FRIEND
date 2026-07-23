@@ -9,10 +9,7 @@ let pendingLocation = null
 let statusHandler = null
 
 export function connectWebSocket(roomId, memberId, onMessage, onStatus) {
-  const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
-  const host = location.hostname
-  const port = 8000 // FastAPI backend port
-  const url = `${protocol}://${host}:${port}/ws/${roomId}/${memberId}`
+  const url = `wss://the-lazyy-friend.onrender.com/ws/${roomId}/${memberId}`
 
   socket = new WebSocket(url)
   messageHandler = onMessage
