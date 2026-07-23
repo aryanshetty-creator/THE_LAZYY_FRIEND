@@ -28,10 +28,10 @@
           <input
             v-model="searchQuery"
             placeholder="Search a place (e.g. Udupi, Forum Mall)"
-            @keyup.enter="searchPlace"
+            @keyup.enter="searchAndSelectFirst"
             @input="onSearchInput"
           />
-          <button class="icon-btn" @click="searchPlace" :disabled="searching">
+          <button class="icon-btn" @click="searchPlace()" :disabled="searching">
             <span v-if="!searching">🔍</span>
             <span v-else class="spinner"></span>
           </button>
@@ -110,6 +110,7 @@
 <script setup>
 import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { createRoom, joinRoom } from '../../shared/api.js'
+import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, USER_LOCATION_ZOOM, DESTINATION_ZOOM } from '../../shared/mapConfig.js'
 import L from 'leaflet'
 
 const emit = defineEmits(['entered'])
@@ -152,7 +153,18 @@ function onSearchInput() {
   }, 500)
 }
 
-async function searchPlace() {
+async function searchAndSelectFirst() {
+  if (searchResults.value.length > 0) {
+    selectPlace(searchResults.value[0])
+    await createAfterDestinationEnter()
+    return
+  }
+
+  await searchPlace({ autoSelectFirst: true })
+  await createAfterDestinationEnter()
+}
+
+async function searchPlace(options = {}) {
   if (!searchQuery.value.trim()) return
   searching.value = true
   error.value = ''
@@ -161,10 +173,14 @@ async function searchPlace() {
     const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${q}&limit=5&countrycodes=in`)
     const data = await res.json()
     if (data.length > 0) {
-      searchResults.value = data.map(item => ({
+      const results = data.map(item => ({
         ...item,
         shortName: item.display_name.split(',')[0],
       }))
+      searchResults.value = results
+      if (options.autoSelectFirst) {
+        selectPlace(results[0])
+      }
     } else {
       searchResults.value = []
       error.value = 'No results found, try a different name'
@@ -203,19 +219,22 @@ function clearDest() {
   }
 }
 
+async function createAfterDestinationEnter() {
+  if (!roomName.value || !yourName.value || destLat.value == null || destLng.value == null) {
+    return
+  }
+
+  await handleCreate()
+}
+
 watch(pickOnMap, async (val) => {
   if (val) {
     await nextTick()
     if (!pickMap && pickMapEl.value) {
-      pickMap = L.map(pickMapEl.value).setView([12.97, 77.59], 13)
+      pickMap = L.map(pickMapEl.value).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM)
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap',
       }).addTo(pickMap)
-
-      // Center on user's actual location
-      navigator.geolocation.getCurrentPosition((pos) => {
-        pickMap.setView([pos.coords.latitude, pos.coords.longitude], 14)
-      })
 
       pickMap.on('click', (e) => {
         destLat.value = parseFloat(e.latlng.lat.toFixed(6))
@@ -226,9 +245,13 @@ watch(pickOnMap, async (val) => {
       })
 
       // If destination already selected, show it
-      if (destLat.value && destLng.value) {
-        pickMap.setView([destLat.value, destLng.value], 15)
+      if (destLat.value != null && destLng.value != null) {
+        pickMap.setView([destLat.value, destLng.value], DESTINATION_ZOOM)
         pickMarker = L.marker([destLat.value, destLng.value]).addTo(pickMap)
+      } else if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition((pos) => {
+          pickMap.setView([pos.coords.latitude, pos.coords.longitude], USER_LOCATION_ZOOM)
+        })
       }
     }
   }

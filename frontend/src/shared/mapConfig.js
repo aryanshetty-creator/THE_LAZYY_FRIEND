@@ -1,0 +1,6 @@
+export const KUNDAPUR_CENTER = [13.6317, 74.6902]
+
+export const DEFAULT_MAP_CENTER = KUNDAPUR_CENTER
+export const DEFAULT_MAP_ZOOM = 13
+export const USER_LOCATION_ZOOM = 14
+export const DESTINATION_ZOOM = 15

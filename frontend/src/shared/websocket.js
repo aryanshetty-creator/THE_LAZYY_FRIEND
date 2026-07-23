@@ -5,8 +5,10 @@
 
 let socket = null
 let messageHandler = null
+let pendingLocation = null
+let statusHandler = null
 
-export function connectWebSocket(roomId, memberId, onMessage) {
+export function connectWebSocket(roomId, memberId, onMessage, onStatus) {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
   const host = location.hostname
   const port = 8000 // FastAPI backend port
@@ -14,9 +16,19 @@ export function connectWebSocket(roomId, memberId, onMessage) {
 
   socket = new WebSocket(url)
   messageHandler = onMessage
+  statusHandler = onStatus
 
   socket.onopen = () => {
     console.log('[WS] Connected to room', roomId)
+    if (statusHandler) statusHandler({ type: 'open' })
+    if (pendingLocation) {
+      socket.send(JSON.stringify({
+        type: 'location_update',
+        lat: pendingLocation.lat,
+        lng: pendingLocation.lng,
+      }))
+      pendingLocation = null
+    }
   }
 
   socket.onmessage = (event) => {
@@ -30,20 +42,24 @@ export function connectWebSocket(roomId, memberId, onMessage) {
 
   socket.onclose = (event) => {
     console.log('[WS] Disconnected', event.code, event.reason)
+    if (statusHandler) statusHandler({ type: 'close', code: event.code, reason: event.reason })
   }
 
   socket.onerror = (err) => {
     console.error('[WS] Error', err)
+    if (statusHandler) statusHandler({ type: 'error' })
   }
 }
 
 export function sendLocation(lat, lng) {
+  pendingLocation = { lat, lng }
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({
       type: 'location_update',
       lat,
       lng,
     }))
+    pendingLocation = null
   }
 }
 
@@ -52,4 +68,7 @@ export function disconnectWebSocket() {
     socket.close()
     socket = null
   }
+  statusHandler = null
+  messageHandler = null
+  pendingLocation = null
 }

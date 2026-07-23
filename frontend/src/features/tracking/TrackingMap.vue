@@ -7,6 +7,7 @@
       </div>
       <button class="share-btn" @click="copyInvite">{{ copied ? 'Copied!' : 'Share Invite' }}</button>
     </div>
+    <p v-if="shareMessage" class="notice">{{ shareMessage }}</p>
 
     <div ref="mapEl" class="map-container"></div>
 
@@ -21,14 +22,18 @@
         <span class="member-tag closest" v-if="member.member_id === closestId">Closest</span>
         <span class="member-tag furthest" v-if="member.member_id === furthestId">Furthest</span>
         <span class="member-distance" v-if="member.distance_text">
-          {{ member.reached ? '✅ Arrived' : member.distance_text + ' away' }}
+          {{ member.reached ? 'Arrived' : member.distance_text + ' remaining' }}
         </span>
         <span class="member-distance" v-else>Waiting for location...</span>
       </div>
       <p v-if="members.length === 0" class="no-members">No members yet</p>
     </div>
 
-    <p v-if="geoError" class="error">{{ geoError }}</p>
+    <div v-if="geoError" class="error location-error">
+      <span>{{ geoError }}</span>
+      <button class="retry-btn" @click="beginLocationWatch">Retry location</button>
+    </div>
+    <p v-if="liveError" class="error">{{ liveError }}</p>
   </div>
 </template>
 
@@ -37,6 +42,8 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import L from 'leaflet'
 import { connectWebSocket, sendLocation, disconnectWebSocket } from '../../shared/websocket.js'
 import { startWatchingLocation, stopWatchingLocation } from '../../shared/geolocation.js'
+import { getRoom } from '../../shared/api.js'
+import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, USER_LOCATION_ZOOM, DESTINATION_ZOOM } from '../../shared/mapConfig.js'
 
 const props = defineProps({
   roomId: String,
@@ -48,7 +55,9 @@ const mapEl = ref(null)
 const members = ref([])
 const roomData = ref(null)
 const geoError = ref('')
+const liveError = ref('')
 const copied = ref(false)
+const shareMessage = ref('')
 
 // Sorted: arrived first, then by distance ascending
 const sortedMembers = computed(() => {
@@ -79,13 +88,23 @@ let map = null
 let memberMarkers = {}
 let memberRoutes = {}
 let destMarker = null
+let hasCenteredOnDestination = false
+let hasCenteredOnUser = false
 let hasFittedOnce = false
+let lastFitSignature = ''
 
 // Color palette for members
 const COLORS = ['#4285F4', '#EA4335', '#FBBC04', '#34A853', '#FF6D01', '#46BDC6', '#7B1FA2']
+const ARRIVAL_RADIUS_METERS = 50
 
 function getColor(index) {
   return COLORS[index % COLORS.length]
+}
+
+function getMemberColor(member) {
+  if (member.member_id === props.memberId) return '#4F46E5'
+  const index = members.value.findIndex((m) => m.member_id === member.member_id)
+  return getColor(index >= 0 ? index : 0)
 }
 
 // Create avatar-style circular marker with initials
@@ -121,6 +140,175 @@ function createAvatarIcon(name, color) {
   })
 }
 
+function bindMemberTooltip(marker, member) {
+  const label = member.member_id === props.memberId ? `${member.name} (You)` : member.name
+  marker.bindTooltip(label, {
+    permanent: true,
+    direction: 'top',
+    offset: [0, -48],
+    className: 'member-tooltip',
+  })
+}
+
+function upsertMemberMarker(member, pos) {
+  const color = member.reached ? '#34A853' : getMemberColor(member)
+  const icon = createAvatarIcon(member.name, color)
+
+  if (memberMarkers[member.member_id]) {
+    memberMarkers[member.member_id].setLatLng(pos).setIcon(icon)
+    bindMemberTooltip(memberMarkers[member.member_id], member)
+  } else {
+    memberMarkers[member.member_id] = L.marker(pos, { icon }).addTo(map)
+    bindMemberTooltip(memberMarkers[member.member_id], member)
+  }
+}
+
+function upsertMemberRoute(member, pos) {
+  if (!roomData.value?.destination || !map) return
+
+  const destination = roomData.value.destination
+  const destinationPosition = [destination.lat, destination.lng]
+
+  if (member.reached) {
+    removeMemberRoute(member.member_id)
+    return
+  }
+
+  if (memberRoutes[member.member_id]) {
+    memberRoutes[member.member_id].setLatLngs([pos, destinationPosition])
+    memberRoutes[member.member_id].setStyle({ color: getMemberColor(member) })
+    return
+  }
+
+  memberRoutes[member.member_id] = L.polyline([pos, destinationPosition], {
+    color: getMemberColor(member),
+    weight: 5,
+    opacity: 0.7,
+    dashArray: '10, 8',
+  }).addTo(map)
+}
+
+function removeMemberRoute(memberId) {
+  if (!memberRoutes[memberId] || !map) return
+  map.removeLayer(memberRoutes[memberId])
+  delete memberRoutes[memberId]
+}
+
+function fitToUserAndDestination(lat, lng) {
+  if (!roomData.value?.destination || !map) return
+  map.fitBounds(
+    [
+      [lat, lng],
+      [roomData.value.destination.lat, roomData.value.destination.lng],
+    ],
+    { padding: [50, 50], maxZoom: 15 }
+  )
+}
+
+function getKnownMapPoints() {
+  const points = []
+
+  if (roomData.value?.destination) {
+    points.push([roomData.value.destination.lat, roomData.value.destination.lng])
+  }
+
+  for (const member of members.value) {
+    if (member.lat != null && member.lng != null) {
+      points.push([member.lat, member.lng])
+    }
+  }
+
+  return points
+}
+
+function getFitSignature(points) {
+  return points
+    .map(([lat, lng]) => `${lat.toFixed(3)},${lng.toFixed(3)}`)
+    .sort()
+    .join('|')
+}
+
+function fitAllKnownLocations() {
+  if (!map) return
+
+  const points = getKnownMapPoints()
+  if (points.length === 0) return
+
+  if (points.length === 1) {
+    const [lat, lng] = points[0]
+    if (!hasCenteredOnDestination) {
+      hasCenteredOnDestination = true
+      map.setView([lat, lng], DESTINATION_ZOOM)
+    }
+    return
+  }
+
+  const signature = getFitSignature(points)
+  const paddedBounds = map.getBounds().pad(-0.08)
+  const hasPointOutsideView = points.some((point) => !paddedBounds.contains(point))
+
+  if (!hasFittedOnce || (hasPointOutsideView && signature !== lastFitSignature)) {
+    hasFittedOnce = true
+    lastFitSignature = signature
+    map.fitBounds(points, { padding: [60, 60], maxZoom: 15 })
+  }
+}
+
+function distanceToDestination(lat, lng) {
+  if (!roomData.value?.destination) return null
+  return haversineDistance(
+    lat,
+    lng,
+    roomData.value.destination.lat,
+    roomData.value.destination.lng
+  )
+}
+
+function haversineDistance(lat1, lng1, lat2, lng2) {
+  const radius = 6371000
+  const toRad = (value) => (value * Math.PI) / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLng = toRad(lng2 - lng1)
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2)
+  return 2 * radius * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+function formatDistance(meters) {
+  if (meters == null) return null
+  if (meters < 1000) return `${Math.round(meters)} m`
+  return `${(meters / 1000).toFixed(1)} km`
+}
+
+function updateLocalMemberLocation(lat, lng) {
+  const distance = distanceToDestination(lat, lng)
+  const reached = distance != null && distance <= ARRIVAL_RADIUS_METERS
+  const currentMember = {
+    member_id: props.memberId,
+    name: props.memberName || 'You',
+    lat,
+    lng,
+    reached,
+    distance_meters: distance,
+    distance_text: formatDistance(distance),
+  }
+  const existingIndex = members.value.findIndex((member) => member.member_id === props.memberId)
+
+  if (existingIndex >= 0) {
+    members.value = members.value.map((member, index) => (
+      index === existingIndex ? { ...member, ...currentMember } : member
+    ))
+  } else {
+    members.value = [...members.value, currentMember]
+  }
+
+  upsertMemberMarker(currentMember, [lat, lng])
+  upsertMemberRoute(currentMember, [lat, lng])
+  fitAllKnownLocations()
+}
+
 // Red pin destination marker
 const destIcon = L.divIcon({
   className: 'dest-pin-marker',
@@ -148,24 +336,17 @@ const destIcon = L.divIcon({
 })
 
 onMounted(() => {
-  // Default center: Karnataka, India (Bangalore area)
-  map = L.map(mapEl.value).setView([12.97, 77.59], 13)
+  // Fallback center when live geolocation has not arrived yet.
+  map = L.map(mapEl.value).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM)
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap',
   }).addTo(map)
 
-  // Connect WebSocket
-  connectWebSocket(props.roomId, props.memberId, handleRoomState)
+  loadInitialRoomState()
 
-  // Start sending our location
-  startWatchingLocation(
-    (lat, lng) => {
-      sendLocation(lat, lng)
-    },
-    (err) => {
-      geoError.value = err
-    }
-  )
+  connectWebSocket(props.roomId, props.memberId, handleRoomState, handleSocketStatus)
+
+  beginLocationWatch()
 })
 
 onBeforeUnmount(() => {
@@ -176,6 +357,32 @@ onBeforeUnmount(() => {
     map = null
   }
 })
+
+function beginLocationWatch() {
+  geoError.value = ''
+  stopWatchingLocation()
+
+  startWatchingLocation(
+    (lat, lng) => {
+      geoError.value = ''
+      updateLocalMemberLocation(lat, lng)
+
+      if (map && !hasCenteredOnUser && !hasFittedOnce) {
+        hasCenteredOnUser = true
+        map.setView([lat, lng], USER_LOCATION_ZOOM)
+      }
+
+      if (roomData.value?.destination && !hasFittedOnce) {
+        fitToUserAndDestination(lat, lng)
+      }
+
+      sendLocation(lat, lng)
+    },
+    (err) => {
+      geoError.value = err
+    }
+  )
+}
 
 function handleRoomState(data) {
   if (data.type !== 'room_state') return
@@ -204,33 +411,12 @@ function handleRoomState(data) {
 
     const pos = [m.lat, m.lng]
     bounds.push(pos)
-    const color = getColor(index)
-    const icon = createAvatarIcon(m.name, m.reached ? '#34A853' : color)
-
-    // Marker
-    if (memberMarkers[m.member_id]) {
-      memberMarkers[m.member_id].setLatLng(pos).setIcon(icon)
-    } else {
-      memberMarkers[m.member_id] = L.marker(pos, { icon }).addTo(map)
-    }
+    upsertMemberMarker(m, pos)
+    upsertMemberRoute(m, pos)
 
     // Route line from member to destination
-    if (data.destination && !m.reached) {
-      const destPos = [data.destination.lat, data.destination.lng]
-      if (memberRoutes[m.member_id]) {
-        memberRoutes[m.member_id].setLatLngs([pos, destPos])
-        memberRoutes[m.member_id].setStyle({ color })
-      } else {
-        memberRoutes[m.member_id] = L.polyline([pos, destPos], {
-          color,
-          weight: 5,
-          opacity: 0.7,
-          dashArray: '10, 8',
-        }).addTo(map)
-      }
-    } else if (memberRoutes[m.member_id]) {
-      map.removeLayer(memberRoutes[m.member_id])
-      delete memberRoutes[m.member_id]
+    if (!data.destination || m.reached) {
+      removeMemberRoute(m.member_id)
     }
   })
 
@@ -248,30 +434,39 @@ function handleRoomState(data) {
     }
   }
 
-  // Fit map: focus on members only (not destination) to avoid over-zooming when far apart
-  // Only fit bounds on first load or when a new member appears
-  const memberBounds = []
-  for (const m of data.members) {
-    if (m.lat != null && m.lng != null) {
-      memberBounds.push([m.lat, m.lng])
-    }
+  fitAllKnownLocations()
+}
+
+async function loadInitialRoomState() {
+  try {
+    const room = await getRoom(props.roomId)
+    handleRoomState({
+      type: 'room_state',
+      destination: room.destination,
+      members: room.members.map((member) => ({
+        ...member,
+        distance_meters: null,
+        distance_text: null,
+      })),
+    })
+  } catch (e) {
+    liveError.value = e.message || 'Could not load room'
+  }
+}
+
+function handleSocketStatus(status) {
+  if (status.type === 'open') {
+    liveError.value = ''
+    return
   }
 
-  if (memberBounds.length > 0 && !hasFittedOnce) {
-    hasFittedOnce = true
-    // Include destination only if it's reasonably close (< 20km from any member)
-    if (data.destination) {
-      const destPos = [data.destination.lat, data.destination.lng]
-      const closeMember = memberBounds.some(([lat, lng]) => {
-        const dLat = Math.abs(lat - destPos[0])
-        const dLng = Math.abs(lng - destPos[1])
-        return dLat < 0.18 && dLng < 0.18 // ~20km
-      })
-      if (closeMember) {
-        memberBounds.push(destPos)
-      }
-    }
-    map.fitBounds(memberBounds, { padding: [50, 50], maxZoom: 15, minZoom: 12 })
+  if (status.type === 'close' && status.code === 4004) {
+    liveError.value = 'Room link is invalid or expired'
+    return
+  }
+
+  if (status.type === 'error') {
+    liveError.value = 'Live updates could not connect. Check that the backend is running on port 8000.'
   }
 }
 
@@ -279,8 +474,15 @@ function copyInvite() {
   const url = `${location.origin}${location.pathname}?room=${props.roomId}`
   navigator.clipboard.writeText(url).then(() => {
     copied.value = true
+    shareMessage.value = isLocalOnlyHost()
+      ? 'This invite uses localhost, so it only opens on this device. Use your LAN IP or a hosted URL before sending it.'
+      : 'Invite link copied'
     setTimeout(() => (copied.value = false), 2000)
   })
+}
+
+function isLocalOnlyHost() {
+  return ['localhost', '127.0.0.1', '0.0.0.0'].includes(location.hostname)
 }
 </script>
 
@@ -398,6 +600,34 @@ function copyInvite() {
   padding: 8px;
   margin: 0;
 }
+.location-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.retry-btn {
+  border: none;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+.retry-btn:hover {
+  background: #dc2626;
+}
+.notice {
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+  padding: 8px 16px;
+  text-align: center;
+  margin: 0;
+}
 </style>
 
 <style>
@@ -417,5 +647,18 @@ function copyInvite() {
 }
 .dest-tooltip::before {
   border-top-color: #fff !important;
+}
+.member-tooltip {
+  background: #111827;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.member-tooltip::before {
+  border-top-color: #111827 !important;
 }
 </style>
