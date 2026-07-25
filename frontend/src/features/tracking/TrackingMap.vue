@@ -58,7 +58,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import L from 'leaflet'
 import { connectWebSocket, sendLocation, disconnectWebSocket } from '../../shared/websocket.js'
 import { startWatchingLocation, stopWatchingLocation } from '../../shared/geolocation.js'
-import { getRoom } from '../../shared/api.js'
+import { getRoom, updateMemberLocation } from '../../shared/api.js'
 import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, USER_LOCATION_ZOOM, DESTINATION_ZOOM } from '../../shared/mapConfig.js'
 
 const props = defineProps({
@@ -374,6 +374,9 @@ function updateLocalMemberLocation(lat, lng) {
   upsertMemberMarker(currentMember, [lat, lng])
   upsertMemberTrackAndRoute(currentMember, [lat, lng], history)
   fitAllKnownLocations()
+
+  // Always sync location to backend via REST in background
+  updateMemberLocation(props.roomId, props.memberId, lat, lng).catch(() => {})
 }
 
 // Red pin destination marker
@@ -561,6 +564,9 @@ function startPollingFallback() {
   stopPollingFallback()
   pollInterval = setInterval(async () => {
     try {
+      if (lastMyLat != null && lastMyLng != null) {
+        await updateMemberLocation(props.roomId, props.memberId, lastMyLat, lastMyLng).catch(() => {})
+      }
       const room = await getRoom(props.roomId)
       handleRoomState({
         type: 'room_state',

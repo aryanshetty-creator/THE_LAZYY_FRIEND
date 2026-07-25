@@ -39,6 +39,53 @@ def api_join_room(room_id: str, body: JoinRoomRequest):
     return {"member_id": member.member_id, "room": room_to_dict(room)}
 
 
+import time
+import asyncio
+from features.tracking.location import check_arrived
+
+
+class LocationUpdateRequest(BaseModel):
+    lat: float
+    lng: float
+
+
+@router.post("/{room_id}/members/{member_id}/location")
+def api_update_location(room_id: str, member_id: str, body: LocationUpdateRequest):
+    room = get_room(room_id)
+    if not room or member_id not in room.members:
+        raise HTTPException(status_code=404, detail="Room or member not found")
+
+    member = room.members[member_id]
+    member.lat = body.lat
+    member.lng = body.lng
+    member.last_update = time.time()
+
+    pos = [body.lat, body.lng]
+    if not member.history:
+        member.history.append(pos)
+    else:
+        last = member.history[-1]
+        if abs(last[0] - body.lat) > 0.000005 or abs(last[1] - body.lng) > 0.000005:
+            member.history.append(pos)
+            if len(member.history) > 1000:
+                member.history.pop(0)
+
+    member.reached = check_arrived(
+        body.lat, body.lng,
+        room.destination_lat, room.destination_lng,
+    )
+
+    from features.tracking.websocket import broadcast_room_state
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(broadcast_room_state(room_id))
+    except Exception:
+        pass
+
+    return room_to_dict(room)
+
+
 @router.get("/{room_id}")
 def api_get_room(room_id: str):
     room = get_room(room_id)

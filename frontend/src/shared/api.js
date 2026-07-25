@@ -48,3 +48,14 @@ export async function getRoom(roomId) {
   if (!res.ok) throw new Error('Room not found')
   return res.json()
 }
+
+export async function updateMemberLocation(roomId, memberId, lat, lng) {
+  const API_BASE = getBackendBase()
+  const res = await fetch(`${API_BASE}/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(memberId)}/location`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat, lng }),
+  })
+  if (!res.ok) throw new Error('Failed to update location')
+  return res.json()
+}
