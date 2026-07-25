@@ -15,6 +15,7 @@ class Member:
     lng: Optional[float] = None
     last_update: Optional[float] = None
     reached: bool = False
+    history: list = field(default_factory=list)  # list of [lat, lng] coordinates
 
 
 @dataclass

@@ -1,6 +1,22 @@
-const API_BASE = "https://the-lazyy-friend.onrender.com/api"
+export function getBackendBase() {
+  if (import.meta.env.VITE_API_BASE) {
+    return import.meta.env.VITE_API_BASE
+  }
+  const { protocol, hostname } = window.location
+  const isLocal = hostname === 'localhost' || 
+                  hostname === '127.0.0.1' || 
+                  /^192\.168\.\d+\.\d+$/.test(hostname) || 
+                  /^10\.\d+\.\d+\.\d+$/.test(hostname) || 
+                  /^172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+$/.test(hostname)
+
+  if (isLocal) {
+    return `${protocol}//${hostname}:8000/api`
+  }
+  return "https://the-lazyy-friend.onrender.com/api"
+}
 
 export async function createRoom(name, destinationLat, destinationLng, destinationName) {
+  const API_BASE = getBackendBase()
   const res = await fetch(`${API_BASE}/rooms/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -16,6 +32,7 @@ export async function createRoom(name, destinationLat, destinationLng, destinati
 }
 
 export async function joinRoom(roomId, memberName) {
+  const API_BASE = getBackendBase()
   const res = await fetch(`${API_BASE}/rooms/${encodeURIComponent(roomId)}/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -26,6 +43,7 @@ export async function joinRoom(roomId, memberName) {
 }
 
 export async function getRoom(roomId) {
+  const API_BASE = getBackendBase()
   const res = await fetch(`${API_BASE}/rooms/${encodeURIComponent(roomId)}`)
   if (!res.ok) throw new Error('Room not found')
   return res.json()

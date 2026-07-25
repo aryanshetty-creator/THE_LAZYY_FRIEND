@@ -38,6 +38,7 @@ async def broadcast_room_state(room_id: str):
             "name": m.name,
             "lat": m.lat,
             "lng": m.lng,
+            "history": m.history,
             "reached": m.reached,
             "distance_meters": dist,
             "distance_text": dist_text,
@@ -95,6 +96,16 @@ async def websocket_tracking(websocket: WebSocket, room_id: str, member_id: str)
                     member.lat = lat
                     member.lng = lng
                     member.last_update = time.time()
+                    pos = [lat, lng]
+                    if not member.history:
+                        member.history.append(pos)
+                    else:
+                        last = member.history[-1]
+                        if abs(last[0] - lat) > 0.000005 or abs(last[1] - lng) > 0.000005:
+                            member.history.append(pos)
+                            if len(member.history) > 1000:
+                                member.history.pop(0)
+
                     member.reached = check_arrived(
                         lat, lng,
                         room.destination_lat, room.destination_lng,

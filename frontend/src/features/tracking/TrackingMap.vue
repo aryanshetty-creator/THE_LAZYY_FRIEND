@@ -20,26 +20,34 @@
     </div>
 
     <div class="members-list">
-      <h3>Members</h3>
+      <h3>Live Members</h3>
       <div v-for="member in sortedMembers" :key="member.member_id" class="member-row">
-        <span class="member-dot" :class="{ reached: member.reached, you: member.member_id === memberId }"></span>
-        <span class="member-name">
-          {{ member.name }}
-          <span v-if="member.member_id === memberId" class="you-badge">(you)</span>
-        </span>
-        <span class="member-tag closest" v-if="member.member_id === closestId">Closest</span>
-        <span class="member-tag furthest" v-if="member.member_id === furthestId">Furthest</span>
-        <span class="member-distance" v-if="member.distance_text">
-          {{ member.reached ? 'Arrived' : member.distance_text + ' remaining' }}
-        </span>
-        <span class="member-distance" v-else>Waiting for location...</span>
+        <span
+          class="member-dot"
+          :style="{ backgroundColor: getMemberColor(member) }"
+          :class="{ reached: member.reached, you: member.member_id === memberId }"
+        ></span>
+        <div class="member-info">
+          <span class="member-name">
+            {{ member.name }}
+            <span v-if="member.member_id === memberId" class="you-badge">(you)</span>
+          </span>
+          <div class="member-sub">
+            <span class="member-tag closest" v-if="member.member_id === closestId">Closest</span>
+            <span class="member-tag furthest" v-if="member.member_id === furthestId">Furthest</span>
+            <span class="member-distance" v-if="member.distance_text">
+              {{ member.reached ? '🎉 Arrived' : member.distance_text + ' remaining' }}
+            </span>
+            <span class="member-distance" v-else>Waiting for location...</span>
+          </div>
+        </div>
       </div>
-      <p v-if="members.length === 0" class="no-members">No members yet</p>
+      <p v-if="members.length === 0" class="no-members">No members connected yet</p>
     </div>
 
     <div v-if="geoError" class="error location-error">
       <span>{{ geoError }}</span>
-      <button class="retry-btn" @click="beginLocationWatch">Retry location</button>
+      <button class="retry-btn" @click="beginLocationWatch">Retry Location</button>
     </div>
     <p v-if="liveError" class="error">{{ liveError }}</p>
   </div>
@@ -66,6 +74,20 @@ const geoError = ref('')
 const liveError = ref('')
 const copied = ref(false)
 const shareMessage = ref('')
+
+// Palette of distinct, high-visibility colors for members
+const MEMBER_COLORS = [
+  '#3B82F6', // Blue
+  '#8B5CF6', // Purple
+  '#10B981', // Emerald
+  '#F59E0B', // Amber
+  '#EF4444', // Red
+  '#EC4899', // Pink
+  '#06B6D4', // Cyan
+  '#84CC16', // Lime
+]
+
+const ARRIVAL_RADIUS_METERS = 100
 
 // Sorted: arrived first, then by distance ascending
 const sortedMembers = computed(() => {
@@ -94,73 +116,88 @@ const furthestId = computed(() => {
 
 let map = null
 let memberMarkers = {}
-let memberRoutes = {}
+let memberTrackLines = {} // Polyline for member traveled path history
+let memberRouteLines = {} // Dashed Polyline for route to destination
 let destMarker = null
 let hasCenteredOnDestination = false
 let hasCenteredOnUser = false
 let hasFittedOnce = false
 let lastFitSignature = ''
 
-// Color palette for members
-const COLORS = ['#4285F4', '#EA4335', '#FBBC04', '#34A853', '#FF6D01', '#46BDC6', '#7B1FA2']
-const ARRIVAL_RADIUS_METERS = 50
-
-function getColor(index) {
-  return COLORS[index % COLORS.length]
-}
-
 function getMemberColor(member) {
-  if (member.member_id === props.memberId) return '#4F46E5'
+  if (!member) return MEMBER_COLORS[0]
   const index = members.value.findIndex((m) => m.member_id === member.member_id)
-  return getColor(index >= 0 ? index : 0)
+  if (index >= 0) {
+    return MEMBER_COLORS[index % MEMBER_COLORS.length]
+  }
+  return MEMBER_COLORS[0]
 }
 
-// Create avatar-style circular marker with initials
-function createAvatarIcon(name, color) {
+// Create avatar-style circular marker with initials & pulsing ring
+function createAvatarIcon(name, color, isReached) {
   const initials = name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
+  const finalColor = isReached ? '#22C55E' : color
+
   return L.divIcon({
     className: 'avatar-marker',
     html: `
-      <div style="
-        width: 40px; height: 40px;
-        background: ${color};
-        border: 3px solid #fff;
-        border-radius: 50%;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #fff;
-        font-weight: 700;
-        font-size: 14px;
-        font-family: 'Segoe UI', sans-serif;
-      ">${initials}</div>
-      <div style="
-        width: 0; height: 0;
-        border-left: 8px solid transparent;
-        border-right: 8px solid transparent;
-        border-top: 10px solid #fff;
-        margin: -2px auto 0;
-      "></div>
+      <div style="position: relative; width: 44px; height: 58px; display: flex; flex-direction: column; align-items: center;">
+        <div style="
+          position: absolute;
+          top: -3px; left: -3px;
+          width: 46px; height: 46px;
+          border-radius: 50%;
+          border: 2px solid ${finalColor};
+          animation: pulse-ring 2s infinite;
+          opacity: 0.6;
+        "></div>
+        <div style="
+          width: 40px; height: 40px;
+          background: ${finalColor};
+          border: 3px solid #ffffff;
+          border-radius: 50%;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #ffffff;
+          font-weight: 700;
+          font-size: 14px;
+          font-family: 'Segoe UI', sans-serif;
+          z-index: 2;
+        ">${initials}</div>
+        <div style="
+          width: 0; height: 0;
+          border-left: 7px solid transparent;
+          border-right: 7px solid transparent;
+          border-top: 9px solid #ffffff;
+          margin-top: -2px;
+          z-index: 1;
+        "></div>
+      </div>
     `,
-    iconSize: [40, 54],
-    iconAnchor: [20, 54],
+    iconSize: [44, 58],
+    iconAnchor: [22, 58],
   })
 }
 
 function bindMemberTooltip(marker, member) {
-  const label = member.member_id === props.memberId ? `${member.name} (You)` : member.name
-  marker.bindTooltip(label, {
+  const isYou = member.member_id === props.memberId
+  const nameLabel = isYou ? `${member.name} (You)` : member.name
+  const distLabel = member.reached ? 'Arrived' : (member.distance_text || 'Locating...')
+  const fullLabel = `${nameLabel} • ${distLabel}`
+
+  marker.bindTooltip(fullLabel, {
     permanent: true,
     direction: 'top',
-    offset: [0, -48],
+    offset: [0, -52],
     className: 'member-tooltip',
   })
 }
 
 function upsertMemberMarker(member, pos) {
-  const color = member.reached ? '#34A853' : getMemberColor(member)
-  const icon = createAvatarIcon(member.name, color)
+  const color = getMemberColor(member)
+  const icon = createAvatarIcon(member.name, color, member.reached)
 
   if (memberMarkers[member.member_id]) {
     memberMarkers[member.member_id].setLatLng(pos).setIcon(icon)
@@ -171,61 +208,71 @@ function upsertMemberMarker(member, pos) {
   }
 }
 
-function upsertMemberRoute(member, pos) {
-  if (!roomData.value?.destination || !map) return
+function upsertMemberTrackAndRoute(member, pos, history) {
+  if (!map) return
 
-  const destination = roomData.value.destination
-  const destinationPosition = [destination.lat, destination.lng]
+  const color = getMemberColor(member)
 
-  if (member.reached) {
+  // 1. Solid track line showing traveled movement history
+  const historyPoints = (history && history.length > 0) ? history : [pos]
+  if (historyPoints.length >= 2) {
+    if (memberTrackLines[member.member_id]) {
+      memberTrackLines[member.member_id].setLatLngs(historyPoints)
+      memberTrackLines[member.member_id].setStyle({ color, opacity: 0.85 })
+    } else {
+      memberTrackLines[member.member_id] = L.polyline(historyPoints, {
+        color,
+        weight: 5,
+        opacity: 0.85,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map)
+    }
+  }
+
+  // 2. Dashed line to destination
+  if (!member.reached && roomData.value?.destination) {
+    const destPos = [roomData.value.destination.lat, roomData.value.destination.lng]
+    if (memberRouteLines[member.member_id]) {
+      memberRouteLines[member.member_id].setLatLngs([pos, destPos])
+      memberRouteLines[member.member_id].setStyle({ color })
+    } else {
+      memberRouteLines[member.member_id] = L.polyline([pos, destPos], {
+        color,
+        weight: 3,
+        opacity: 0.6,
+        dashArray: '8, 8',
+      }).addTo(map)
+    }
+  } else {
     removeMemberRoute(member.member_id)
-    return
   }
-
-  if (memberRoutes[member.member_id]) {
-    memberRoutes[member.member_id].setLatLngs([pos, destinationPosition])
-    memberRoutes[member.member_id].setStyle({ color: getMemberColor(member) })
-    return
-  }
-
-  memberRoutes[member.member_id] = L.polyline([pos, destinationPosition], {
-    color: getMemberColor(member),
-    weight: 5,
-    opacity: 0.7,
-    dashArray: '10, 8',
-  }).addTo(map)
 }
 
 function removeMemberRoute(memberId) {
-  if (!memberRoutes[memberId] || !map) return
-  map.removeLayer(memberRoutes[memberId])
-  delete memberRoutes[memberId]
+  if (memberRouteLines[memberId] && map) {
+    map.removeLayer(memberRouteLines[memberId])
+    delete memberRouteLines[memberId]
+  }
 }
 
-function fitToUserAndDestination(lat, lng) {
-  if (!roomData.value?.destination || !map) return
-  map.fitBounds(
-    [
-      [lat, lng],
-      [roomData.value.destination.lat, roomData.value.destination.lng],
-    ],
-    { padding: [50, 50], maxZoom: 15 }
-  )
+function removeMemberTrack(memberId) {
+  if (memberTrackLines[memberId] && map) {
+    map.removeLayer(memberTrackLines[memberId])
+    delete memberTrackLines[memberId]
+  }
 }
 
 function getKnownMapPoints() {
   const points = []
-
   if (roomData.value?.destination) {
     points.push([roomData.value.destination.lat, roomData.value.destination.lng])
   }
-
   for (const member of members.value) {
     if (member.lat != null && member.lng != null) {
       points.push([member.lat, member.lng])
     }
   }
-
   return points
 }
 
@@ -238,7 +285,6 @@ function getFitSignature(points) {
 
 function fitAllKnownLocations() {
   if (!map) return
-
   const points = getKnownMapPoints()
   if (points.length === 0) return
 
@@ -293,27 +339,34 @@ function formatDistance(meters) {
 function updateLocalMemberLocation(lat, lng) {
   const distance = distanceToDestination(lat, lng)
   const reached = distance != null && distance <= ARRIVAL_RADIUS_METERS
+
+  const existing = members.value.find(m => m.member_id === props.memberId)
+  const history = existing?.history ? [...existing.history] : []
+  const pos = [lat, lng]
+  if (history.length === 0 || Math.abs(history[history.length - 1][0] - lat) > 0.000005 || Math.abs(history[history.length - 1][1] - lng) > 0.000005) {
+    history.push(pos)
+  }
+
   const currentMember = {
     member_id: props.memberId,
     name: props.memberName || 'You',
     lat,
     lng,
+    history,
     reached,
     distance_meters: distance,
     distance_text: formatDistance(distance),
   }
-  const existingIndex = members.value.findIndex((member) => member.member_id === props.memberId)
 
+  const existingIndex = members.value.findIndex((m) => m.member_id === props.memberId)
   if (existingIndex >= 0) {
-    members.value = members.value.map((member, index) => (
-      index === existingIndex ? { ...member, ...currentMember } : member
-    ))
+    members.value = members.value.map((m, idx) => (idx === existingIndex ? { ...m, ...currentMember } : m))
   } else {
     members.value = [...members.value, currentMember]
   }
 
   upsertMemberMarker(currentMember, [lat, lng])
-  upsertMemberRoute(currentMember, [lat, lng])
+  upsertMemberTrackAndRoute(currentMember, [lat, lng], history)
   fitAllKnownLocations()
 }
 
@@ -321,30 +374,29 @@ function updateLocalMemberLocation(lat, lng) {
 const destIcon = L.divIcon({
   className: 'dest-pin-marker',
   html: `
-    <div style="position: relative; width: 30px; height: 42px;">
+    <div style="position: relative; width: 34px; height: 46px;">
       <div style="
-        width: 30px; height: 30px;
+        width: 34px; height: 34px;
         background: #EA4335;
         border: 3px solid #B71C1C;
         border-radius: 50% 50% 50% 0;
         transform: rotate(-45deg);
-        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        box-shadow: 0 3px 10px rgba(0,0,0,0.35);
       "></div>
       <div style="
         position: absolute;
-        top: 8px; left: 10px;
+        top: 10px; left: 12px;
         width: 10px; height: 10px;
-        background: #B71C1C;
+        background: #FFFFFF;
         border-radius: 50%;
       "></div>
     </div>
   `,
-  iconSize: [30, 42],
-  iconAnchor: [15, 42],
+  iconSize: [34, 46],
+  iconAnchor: [17, 46],
 })
 
 onMounted(() => {
-  // Fallback center when live geolocation has not arrived yet.
   map = L.map(mapEl.value, {
     dragging: true,
     scrollWheelZoom: true,
@@ -353,14 +405,13 @@ onMounted(() => {
     boxZoom: true,
     keyboard: true,
   }).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM)
+
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap',
   }).addTo(map)
 
   loadInitialRoomState()
-
   connectWebSocket(props.roomId, props.memberId, handleRoomState, handleSocketStatus)
-
   beginLocationWatch()
 })
 
@@ -387,10 +438,6 @@ function beginLocationWatch() {
         map.setView([lat, lng], USER_LOCATION_ZOOM)
       }
 
-      if (roomData.value?.destination && !hasFittedOnce) {
-        fitToUserAndDestination(lat, lng)
-      }
-
       sendLocation(lat, lng)
     },
     (err) => {
@@ -403,49 +450,49 @@ function handleRoomState(data) {
   if (data.type !== 'room_state') return
 
   roomData.value = data
-  members.value = data.members
+
+  // Enrich members with updated distances if available
+  const updatedMembers = (data.members || []).map(m => {
+    let dist = m.distance_meters
+    let distText = m.distance_text
+    if (dist == null && m.lat != null && m.lng != null && data.destination) {
+      dist = haversineDistance(m.lat, m.lng, data.destination.lat, data.destination.lng)
+      distText = formatDistance(dist)
+    }
+    return {
+      ...m,
+      distance_meters: dist,
+      distance_text: distText,
+    }
+  })
+
+  members.value = updatedMembers
 
   // Destination marker
   if (data.destination && !destMarker) {
     destMarker = L.marker([data.destination.lat, data.destination.lng], { icon: destIcon })
-      .bindTooltip(data.destination.name, { permanent: true, direction: 'top', offset: [0, -44], className: 'dest-tooltip' })
+      .bindTooltip(data.destination.name, { permanent: true, direction: 'top', offset: [0, -48], className: 'dest-tooltip' })
       .addTo(map)
   }
 
-  // Update member markers and route lines
+  // Update member markers and polylines for all members
   const activeIds = new Set()
-  const bounds = []
-
-  if (data.destination) {
-    bounds.push([data.destination.lat, data.destination.lng])
-  }
-
-  data.members.forEach((m, index) => {
+  updatedMembers.forEach((m) => {
     activeIds.add(m.member_id)
     if (m.lat == null || m.lng == null) return
 
     const pos = [m.lat, m.lng]
-    bounds.push(pos)
     upsertMemberMarker(m, pos)
-    upsertMemberRoute(m, pos)
-
-    // Route line from member to destination
-    if (!data.destination || m.reached) {
-      removeMemberRoute(m.member_id)
-    }
+    upsertMemberTrackAndRoute(m, pos, m.history)
   })
 
-  // Remove old markers and routes
+  // Cleanup disconnected or removed members
   for (const id of Object.keys(memberMarkers)) {
     if (!activeIds.has(id)) {
       map.removeLayer(memberMarkers[id])
       delete memberMarkers[id]
-    }
-  }
-  for (const id of Object.keys(memberRoutes)) {
-    if (!activeIds.has(id)) {
-      map.removeLayer(memberRoutes[id])
-      delete memberRoutes[id]
+      removeMemberTrack(id)
+      removeMemberRoute(id)
     }
   }
 
@@ -458,11 +505,7 @@ async function loadInitialRoomState() {
     handleRoomState({
       type: 'room_state',
       destination: room.destination,
-      members: room.members.map((member) => ({
-        ...member,
-        distance_meters: null,
-        distance_text: null,
-      })),
+      members: room.members || [],
     })
   } catch (e) {
     liveError.value = e.message || 'Could not load room'
@@ -481,7 +524,7 @@ function handleSocketStatus(status) {
   }
 
   if (status.type === 'error') {
-    liveError.value = 'Live updates could not connect. Check that the backend is running on port 8000.'
+    liveError.value = 'Connecting live tracking...'
   }
 }
 
@@ -489,10 +532,15 @@ function copyInvite() {
   const url = `${location.origin}${location.pathname}?room=${props.roomId}`
   navigator.clipboard.writeText(url).then(() => {
     copied.value = true
-    shareMessage.value = isLocalOnlyHost()
-      ? 'This invite uses localhost, so it only opens on this device. Use your LAN IP or a hosted URL before sending it.'
-      : 'Invite link copied'
-    setTimeout(() => (copied.value = false), 2000)
+    if (isLocalOnlyHost()) {
+      shareMessage.value = `Room Code: ${props.roomId} | Share link: ${url} (Note: Use your local IP e.g. http://192.168.x.x:5173 to share with friends on mobile)`
+    } else {
+      shareMessage.value = 'Invite link copied to clipboard!'
+    }
+    setTimeout(() => {
+      copied.value = false
+      shareMessage.value = ''
+    }, 4000)
   })
 }
 
@@ -508,7 +556,7 @@ function panMap(x, y) {
 
 <style scoped>
 .tracking-view {
-  font-family: 'Segoe UI', sans-serif;
+  font-family: 'Segoe UI', -apple-system, sans-serif;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -518,30 +566,36 @@ function panMap(x, y) {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background: #fff;
+  background: #ffffff;
   box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   z-index: 1000;
 }
 .header-left h2 {
   margin: 0;
   font-size: 1.2rem;
+  font-weight: 700;
+  color: #1f2937;
 }
 .room-id {
   font-size: 12px;
-  color: #888;
+  color: #6b7280;
+  font-weight: 500;
 }
 .share-btn {
   padding: 8px 16px;
   border: none;
   border-radius: 20px;
-  background: #4285F4;
-  color: #fff;
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  color: #ffffff;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: 0 2px 6px rgba(79,70,229,0.3);
+  transition: transform 0.15s, box-shadow 0.15s;
 }
 .share-btn:hover {
-  background: #3367D6;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(79,70,229,0.4);
 }
 .map-stage {
   flex: 1;
@@ -563,12 +617,12 @@ function panMap(x, y) {
   gap: 6px;
   left: 14px;
   position: absolute;
-  top: 84px;
+  top: 14px;
   z-index: 700;
 }
 .pan-btn {
   align-items: center;
-  background: #fff;
+  background: #ffffff;
   border: 1px solid #d1d5db;
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.15);
@@ -584,65 +638,61 @@ function panMap(x, y) {
 .pan-btn:hover {
   background: #f3f4f6;
 }
-.pan-up {
-  grid-column: 2;
-  grid-row: 1;
-}
-.pan-left {
-  grid-column: 1;
-  grid-row: 2;
-}
-.pan-right {
-  grid-column: 3;
-  grid-row: 2;
-}
-.pan-down {
-  grid-column: 2;
-  grid-row: 3;
-}
-.map-stage .map-container {
-  flex: 1;
-}
+.pan-up { grid-column: 2; grid-row: 1; }
+.pan-left { grid-column: 1; grid-row: 2; }
+.pan-right { grid-column: 3; grid-row: 2; }
+.pan-down { grid-column: 2; grid-row: 3; }
+
 .members-list {
-  background: #fff;
-  padding: 12px 16px;
-  max-height: 200px;
+  background: #ffffff;
+  padding: 14px 18px;
+  max-height: 220px;
   overflow-y: auto;
-  box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.08);
 }
 .members-list h3 {
-  margin: 0 0 8px 0;
+  margin: 0 0 10px 0;
   font-size: 14px;
-  color: #555;
+  font-weight: 700;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 .member-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  border-bottom: 1px solid #f0f0f0;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
 }
 .member-dot {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: #f97316;
   flex-shrink: 0;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  border: 2px solid #ffffff;
 }
-.member-dot.you {
-  background: #4f46e5;
-}
-.member-dot.reached {
-  background: #22c55e;
+.member-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 .member-name {
-  flex: 1;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
+  color: #111827;
 }
 .you-badge {
   color: #4f46e5;
   font-size: 12px;
+  font-weight: 700;
+}
+.member-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
 }
 .member-tag {
   font-size: 10px;
@@ -663,11 +713,11 @@ function panMap(x, y) {
 }
 .member-distance {
   font-size: 13px;
-  color: #888;
-  flex-shrink: 0;
+  color: #6b7280;
+  font-weight: 500;
 }
 .no-members {
-  color: #aaa;
+  color: #9ca3af;
   font-size: 13px;
 }
 .error {
@@ -675,6 +725,8 @@ function panMap(x, y) {
   text-align: center;
   padding: 8px;
   margin: 0;
+  font-size: 13px;
+  background: #fef2f2;
 }
 .location-error {
   display: flex;
@@ -687,52 +739,60 @@ function panMap(x, y) {
   border: none;
   border-radius: 999px;
   background: #ef4444;
-  color: #fff;
+  color: #ffffff;
   cursor: pointer;
   font-size: 12px;
   font-weight: 700;
-  padding: 6px 10px;
+  padding: 6px 12px;
 }
 .retry-btn:hover {
   background: #dc2626;
 }
 .notice {
-  background: #fffbeb;
-  color: #92400e;
+  background: #eff6ff;
+  color: #1e40af;
   font-size: 13px;
-  padding: 8px 16px;
+  padding: 10px 16px;
   text-align: center;
   margin: 0;
+  border-bottom: 1px solid #dbeafe;
 }
 </style>
 
 <style>
-/* Global overrides for Leaflet markers */
+/* Global Leaflet overrides */
 .avatar-marker, .dest-pin-marker {
   background: none !important;
   border: none !important;
 }
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  50% { transform: scale(1.3); opacity: 0.2; }
+  100% { transform: scale(0.95); opacity: 0.8; }
+}
 .dest-tooltip {
-  background: #fff;
+  background: #ffffff;
+  color: #1f2937;
   border: none;
-  border-radius: 4px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-  font-weight: 600;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+  font-weight: 700;
   font-size: 13px;
-  padding: 4px 8px;
+  padding: 6px 10px;
 }
 .dest-tooltip::before {
-  border-top-color: #fff !important;
+  border-top-color: #ffffff !important;
 }
 .member-tooltip {
   background: #111827;
-  color: #fff;
+  color: #ffffff;
   border: none;
   border-radius: 999px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
   font-weight: 600;
   font-size: 12px;
-  padding: 4px 8px;
+  padding: 5px 10px;
+  white-space: nowrap;
 }
 .member-tooltip::before {
   border-top-color: #111827 !important;

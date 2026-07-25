@@ -14,19 +14,30 @@ export function startWatchingLocation(onUpdate, onError) {
   stopWatchingLocation()
   lastErrorMessage = ''
 
+  const options = {
+    enableHighAccuracy: true,
+    maximumAge: 0,
+    timeout: 10000,
+  }
+
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       onUpdate(pos.coords.latitude, pos.coords.longitude)
     },
     (err) => {
-      lastErrorMessage = err.message
-      onError && onError(readableLocationError(err))
+      console.warn('[Geo] High accuracy initial fix failed, attempting fallback...', err)
+      navigator.geolocation.getCurrentPosition(
+        (fallbackPos) => {
+          onUpdate(fallbackPos.coords.latitude, fallbackPos.coords.longitude)
+        },
+        (fallbackErr) => {
+          lastErrorMessage = readableLocationError(fallbackErr)
+          onError && onError(lastErrorMessage)
+        },
+        { enableHighAccuracy: false, maximumAge: 10000, timeout: 10000 }
+      )
     },
-    {
-      enableHighAccuracy: false,
-      maximumAge: 120000,
-      timeout: 15000,
-    }
+    options
   )
 
   watchId = navigator.geolocation.watchPosition(
@@ -41,11 +52,7 @@ export function startWatchingLocation(onUpdate, onError) {
         onError && onError(message)
       }
     },
-    {
-      enableHighAccuracy: false,
-      maximumAge: 30000,
-      timeout: 30000,
-    }
+    options
   )
 }
 
