@@ -1,55 +1,111 @@
 <template>
   <div class="tracking-view">
+    <!-- Top Header -->
     <div class="header">
       <div class="header-left">
-        <h2>{{ roomData?.destination?.name || 'Tracking' }}</h2>
-        <span class="room-id">Room: {{ roomId }}</span>
+        <div class="header-title-wrap">
+          <span class="dest-icon">📍</span>
+          <div>
+            <h2>{{ roomData?.destination?.name || 'Live Tracking' }}</h2>
+            <span class="room-id">Room Code: <strong>{{ roomId }}</strong></span>
+          </div>
+        </div>
       </div>
-      <button class="share-btn" @click="copyInvite">{{ copied ? 'Copied!' : 'Share Invite' }}</button>
+      <button class="share-btn" @click="copyInvite">
+        <span class="btn-icon">🔗</span>
+        {{ copied ? 'Copied Link!' : 'Share Invite' }}
+      </button>
     </div>
-    <p v-if="shareMessage" class="notice">{{ shareMessage }}</p>
+    
+    <div v-if="shareMessage" class="notice-banner">
+      <span>✨ {{ shareMessage }}</span>
+    </div>
 
+    <!-- Map Container Stage -->
     <div class="map-stage">
       <div ref="mapEl" class="map-container"></div>
+      
+      <!-- Pan Controls -->
       <div class="pan-controls" aria-label="Move map">
         <button class="pan-btn pan-up" title="Move map up" @click="panMap(0, -160)">↑</button>
         <button class="pan-btn pan-left" title="Move map left" @click="panMap(-160, 0)">←</button>
         <button class="pan-btn pan-right" title="Move map right" @click="panMap(160, 0)">→</button>
         <button class="pan-btn pan-down" title="Move map down" @click="panMap(0, 160)">↓</button>
       </div>
+
+      <!-- Floating Live Status Overlay -->
+      <div class="live-status-pill">
+        <span class="pulse-dot"></span>
+        <span>{{ members.length }} Member{{ members.length === 1 ? '' : 's' }} Live</span>
+      </div>
     </div>
 
-    <div class="members-list">
-      <h3>Live Members</h3>
-      <div v-for="member in sortedMembers" :key="member.member_id" class="member-row">
-        <span
-          class="member-dot"
-          :style="{ backgroundColor: getMemberColor(member) }"
-          :class="{ reached: member.reached, you: member.member_id === memberId }"
-        ></span>
-        <div class="member-info">
-          <span class="member-name">
-            {{ member.name }}
-            <span v-if="member.member_id === memberId" class="you-badge">(you)</span>
-          </span>
-          <div class="member-sub">
-            <span class="member-tag closest" v-if="member.member_id === closestId">Closest</span>
-            <span class="member-tag furthest" v-if="member.member_id === furthestId">Furthest</span>
-            <span class="member-distance" v-if="member.distance_text">
-              {{ member.reached ? '🎉 Arrived' : member.distance_text + ' remaining' }}
-            </span>
-            <span class="member-distance" v-else>Waiting for location...</span>
-          </div>
+    <!-- Members Leaderboard Panel -->
+    <div class="members-card">
+      <div class="members-header">
+        <div class="header-title">
+          <h3>🏆 Distance Leaderboard</h3>
+          <span class="member-count-badge">{{ rankedMembers.length }} Connected</span>
         </div>
       </div>
-      <p v-if="members.length === 0" class="no-members">No members connected yet</p>
+
+      <div class="members-grid">
+        <div 
+          v-for="member in rankedMembers" 
+          :key="member.member_id" 
+          class="member-card"
+          :class="{ 'is-you': member.member_id === memberId, 'is-arrived': member.reached }"
+        >
+          <!-- Left Avatar & Rank Badge -->
+          <div class="avatar-wrap">
+            <div 
+              class="avatar-circle" 
+              :style="{ backgroundColor: getMemberColor(member) }"
+            >
+              {{ getInitials(member.name) }}
+            </div>
+            <span class="rank-badge" :class="getRankClass(member.rank)">
+              {{ member.rankSymbol }}
+            </span>
+          </div>
+
+          <!-- Middle Member Details -->
+          <div class="member-details">
+            <div class="name-row">
+              <span class="member-name">{{ member.name }}</span>
+              <span v-if="member.member_id === memberId" class="you-tag">YOU</span>
+            </div>
+
+            <div class="status-row">
+              <span v-if="member.reached" class="tag arrived-tag">🎉 Arrived</span>
+              <span v-else-if="member.rank === 1 && member.distance_meters != null" class="tag leader-tag">👑 #1 Closest</span>
+              <span v-else-if="member.distance_meters != null" class="tag rank-tag">Rank #{{ member.rank }}</span>
+
+              <span class="distance-text" v-if="member.distance_text">
+                {{ member.reached ? 'Reached Destination' : member.distance_text + ' remaining' }}
+              </span>
+              <span class="distance-text waiting" v-else>Locating GPS...</span>
+            </div>
+          </div>
+
+          <!-- Right Color Line Indicator -->
+          <div 
+            class="color-indicator-bar"
+            :style="{ backgroundColor: getMemberColor(member) }"
+            :title="'Track color for ' + member.name"
+          ></div>
+        </div>
+
+        <p v-if="rankedMembers.length === 0" class="no-members">No members in room yet. Click Share Invite to invite friends!</p>
+      </div>
     </div>
 
-    <div v-if="geoError" class="error location-error">
-      <span>{{ geoError }}</span>
-      <button class="retry-btn" @click="beginLocationWatch">Retry Location</button>
+    <!-- Banners -->
+    <div v-if="geoError" class="error-banner location-error">
+      <span>⚠️ {{ geoError }}</span>
+      <button class="retry-btn" @click="beginLocationWatch">Retry GPS</button>
     </div>
-    <p v-if="liveError" class="error">{{ liveError }}</p>
+    <p v-if="liveError" class="error-banner">{{ liveError }}</p>
   </div>
 </template>
 
@@ -79,48 +135,49 @@ const wsConnected = ref(false)
 let pollInterval = null
 const POLL_INTERVAL_MS = 4000
 
-// Palette of distinct, high-visibility colors for members
-const MEMBER_COLORS = [
-  '#3B82F6', // Blue
-  '#8B5CF6', // Purple
-  '#10B981', // Emerald
-  '#F59E0B', // Amber
-  '#EF4444', // Red
-  '#EC4899', // Pink
+// High-contrast, distinct colors for members
+const DISTINCT_COLORS = [
+  '#4F46E5', // Indigo Blue (Reserved for You / Host)
+  '#EC4899', // Hot Pink
+  '#10B981', // Emerald Green
+  '#F59E0B', // Amber Gold
+  '#8B5CF6', // Vivid Purple
   '#06B6D4', // Cyan
+  '#EF4444', // Coral Red
   '#84CC16', // Lime
 ]
 
 const ARRIVAL_RADIUS_METERS = 100
 
-// Sorted: arrived first, then by distance ascending
-const sortedMembers = computed(() => {
-  return [...members.value].sort((a, b) => {
+// Ranked & sorted members by closeness to destination
+const rankedMembers = computed(() => {
+  const sorted = [...members.value].sort((a, b) => {
     if (a.reached && !b.reached) return -1
     if (!a.reached && b.reached) return 1
     const distA = a.distance_meters ?? Infinity
     const distB = b.distance_meters ?? Infinity
     return distA - distB
   })
-})
 
-// Closest non-arrived member with a known location
-const closestId = computed(() => {
-  const active = members.value.filter(m => !m.reached && m.distance_meters != null)
-  if (active.length === 0) return null
-  return active.reduce((min, m) => m.distance_meters < min.distance_meters ? m : min).member_id
-})
+  let rankCounter = 1
+  return sorted.map((member) => {
+    const rank = rankCounter++
+    let rankSymbol = `#${rank}`
+    if (rank === 1) rankSymbol = '1st'
+    else if (rank === 2) rankSymbol = '2nd'
+    else if (rank === 3) rankSymbol = '3rd'
 
-// Furthest non-arrived member with a known location
-const furthestId = computed(() => {
-  const active = members.value.filter(m => !m.reached && m.distance_meters != null)
-  if (active.length === 0) return null
-  return active.reduce((max, m) => m.distance_meters > max.distance_meters ? m : max).member_id
+    return {
+      ...member,
+      rank,
+      rankSymbol,
+    }
+  })
 })
 
 let map = null
 let memberMarkers = {}
-let memberTrackLines = {} // Polyline for member traveled path history
+let memberTrackLines = {} // Solid Polyline for member traveled path history
 let memberRouteLines = {} // Dashed Polyline for route to destination
 let destMarker = null
 let hasCenteredOnDestination = false
@@ -131,59 +188,98 @@ let lastMyLat = null
 let lastMyLng = null
 
 function getMemberColor(member) {
-  if (!member) return MEMBER_COLORS[0]
-  const index = members.value.findIndex((m) => m.member_id === member.member_id)
-  if (index >= 0) {
-    return MEMBER_COLORS[index % MEMBER_COLORS.length]
+  if (!member) return DISTINCT_COLORS[0]
+  if (member.member_id === props.memberId) return '#4F46E5' // You are always Indigo Blue
+
+  let hash = 0
+  for (let i = 0; i < member.member_id.length; i++) {
+    hash = member.member_id.charCodeAt(i) + ((hash << 5) - hash)
   }
-  return MEMBER_COLORS[0]
+  const idx = (Math.abs(hash) % (DISTINCT_COLORS.length - 1)) + 1
+  return DISTINCT_COLORS[idx]
 }
 
-// Create avatar-style circular marker with initials & pulsing ring
-function createAvatarIcon(name, color, isReached) {
-  const initials = name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
-  const finalColor = isReached ? '#22C55E' : color
+function getInitials(name) {
+  if (!name) return '?'
+  return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
+}
+
+function getRankClass(rank) {
+  if (rank === 1) return 'rank-first'
+  if (rank === 2) return 'rank-second'
+  if (rank === 3) return 'rank-third'
+  return 'rank-other'
+}
+
+// Create custom avatar marker with rank badge on map
+function createAvatarIcon(member, color) {
+  const initials = getInitials(member.name)
+  const isReached = member.reached
+  const finalColor = isReached ? '#10B981' : color
+  const rankText = member.rank === 1 ? '👑 #1' : `#${member.rank || '?'}`
 
   return L.divIcon({
     className: 'avatar-marker',
     html: `
-      <div style="position: relative; width: 44px; height: 58px; display: flex; flex-direction: column; align-items: center;">
+      <div style="position: relative; width: 48px; height: 62px; display: flex; flex-direction: column; align-items: center;">
+        <!-- Pulsing ring animation for live location -->
         <div style="
           position: absolute;
-          top: -3px; left: -3px;
-          width: 46px; height: 46px;
+          top: -3px; left: -1px;
+          width: 50px; height: 50px;
           border-radius: 50%;
-          border: 2px solid ${finalColor};
-          animation: pulse-ring 2s infinite;
+          border: 2.5px solid ${finalColor};
+          animation: pulse-ring 2.2s infinite;
           opacity: 0.6;
         "></div>
+        
+        <!-- Rank Pill Badge -->
         <div style="
-          width: 40px; height: 40px;
+          position: absolute;
+          top: -8px;
+          background: #1E293B;
+          color: #F8FAFC;
+          font-size: 10px;
+          font-weight: 800;
+          padding: 1px 6px;
+          border-radius: 10px;
+          border: 1.5px solid ${finalColor};
+          box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+          z-index: 10;
+          white-space: nowrap;
+        ">${rankText}</div>
+
+        <!-- Avatar Circle -->
+        <div style="
+          width: 44px; height: 44px;
           background: ${finalColor};
-          border: 3px solid #ffffff;
+          border: 3px solid #FFFFFF;
           border-radius: 50%;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          box-shadow: 0 4px 14px rgba(0,0,0,0.35);
           display: flex;
           align-items: center;
           justify-content: center;
-          color: #ffffff;
-          font-weight: 700;
-          font-size: 14px;
+          color: #FFFFFF;
+          font-weight: 800;
+          font-size: 15px;
           font-family: 'Segoe UI', sans-serif;
           z-index: 2;
+          margin-top: 4px;
         ">${initials}</div>
+        
+        <!-- Pointer Arrow -->
         <div style="
           width: 0; height: 0;
           border-left: 7px solid transparent;
           border-right: 7px solid transparent;
-          border-top: 9px solid #ffffff;
+          border-top: 9px solid #FFFFFF;
           margin-top: -2px;
           z-index: 1;
         "></div>
       </div>
     `,
-    iconSize: [44, 58],
-    iconAnchor: [22, 58],
+    iconSize: [48, 62],
+    iconAnchor: [24, 62],
   })
 }
 
@@ -191,19 +287,20 @@ function bindMemberTooltip(marker, member) {
   const isYou = member.member_id === props.memberId
   const nameLabel = isYou ? `${member.name} (You)` : member.name
   const distLabel = member.reached ? 'Arrived' : (member.distance_text || 'Locating...')
-  const fullLabel = `${nameLabel} • ${distLabel}`
+  const rankLabel = member.rank ? `[#${member.rank}] ` : ''
+  const fullLabel = `${rankLabel}${nameLabel} • ${distLabel}`
 
   marker.bindTooltip(fullLabel, {
     permanent: true,
     direction: 'top',
-    offset: [0, -52],
+    offset: [0, -56],
     className: 'member-tooltip',
   })
 }
 
 function upsertMemberMarker(member, pos) {
   const color = getMemberColor(member)
-  const icon = createAvatarIcon(member.name, color, member.reached)
+  const icon = createAvatarIcon(member, color)
 
   if (memberMarkers[member.member_id]) {
     memberMarkers[member.member_id].setLatLng(pos).setIcon(icon)
@@ -224,12 +321,12 @@ function upsertMemberTrackAndRoute(member, pos, history) {
   if (historyPoints.length >= 2) {
     if (memberTrackLines[member.member_id]) {
       memberTrackLines[member.member_id].setLatLngs(historyPoints)
-      memberTrackLines[member.member_id].setStyle({ color, opacity: 0.85 })
+      memberTrackLines[member.member_id].setStyle({ color, opacity: 0.88 })
     } else {
       memberTrackLines[member.member_id] = L.polyline(historyPoints, {
         color,
         weight: 5,
-        opacity: 0.85,
+        opacity: 0.88,
         lineCap: 'round',
         lineJoin: 'round',
       }).addTo(map)
@@ -246,7 +343,7 @@ function upsertMemberTrackAndRoute(member, pos, history) {
       memberRouteLines[member.member_id] = L.polyline([pos, destPos], {
         color,
         weight: 3,
-        opacity: 0.6,
+        opacity: 0.65,
         dashArray: '8, 8',
       }).addTo(map)
     }
@@ -371,8 +468,9 @@ function updateLocalMemberLocation(lat, lng) {
     members.value = [...members.value, currentMember]
   }
 
-  upsertMemberMarker(currentMember, [lat, lng])
-  upsertMemberTrackAndRoute(currentMember, [lat, lng], history)
+  const enrichedMember = rankedMembers.value.find(m => m.member_id === props.memberId) || currentMember
+  upsertMemberMarker(enrichedMember, [lat, lng])
+  upsertMemberTrackAndRoute(enrichedMember, [lat, lng], history)
   fitAllKnownLocations()
 
   // Always sync location to backend via REST in background
@@ -386,11 +484,11 @@ const destIcon = L.divIcon({
     <div style="position: relative; width: 34px; height: 46px;">
       <div style="
         width: 34px; height: 34px;
-        background: #EA4335;
-        border: 3px solid #B71C1C;
+        background: #EF4444;
+        border: 3px solid #991B1B;
         border-radius: 50% 50% 50% 0;
         transform: rotate(-45deg);
-        box-shadow: 0 3px 10px rgba(0,0,0,0.35);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.35);
       "></div>
       <div style="
         position: absolute;
@@ -464,10 +562,8 @@ function handleRoomState(data) {
 
   roomData.value = data
 
-  // Merge server members with local "self" data to preserve our latest GPS position
   const serverMembers = (data.members || [])
   const updatedMembers = serverMembers.map(m => {
-    // For ourselves, overlay our latest local GPS if server hasn't caught up yet
     if (m.member_id === props.memberId && lastMyLat != null && lastMyLng != null) {
       if (m.lat == null || m.lng == null) {
         m = { ...m, lat: lastMyLat, lng: lastMyLng }
@@ -481,7 +577,6 @@ function handleRoomState(data) {
       distText = formatDistance(dist)
     }
 
-    // Preserve local history if server doesn't have it yet
     const existingMember = members.value.find(em => em.member_id === m.member_id)
     const history = (m.history && m.history.length > 0) ? m.history : (existingMember?.history || [])
 
@@ -493,7 +588,6 @@ function handleRoomState(data) {
     }
   })
 
-  // If we (self) are not in the server list yet but we have local GPS, add ourselves
   const selfInList = updatedMembers.some(m => m.member_id === props.memberId)
   if (!selfInList && lastMyLat != null && lastMyLng != null) {
     const dist = data.destination ? haversineDistance(lastMyLat, lastMyLng, data.destination.lat, data.destination.lng) : null
@@ -522,7 +616,7 @@ function handleRoomState(data) {
 
   // Update member markers and polylines for all members
   const activeIds = new Set()
-  updatedMembers.forEach((m) => {
+  rankedMembers.value.forEach((m) => {
     activeIds.add(m.member_id)
     if (m.lat == null || m.lng == null) return
 
@@ -557,9 +651,6 @@ async function loadInitialRoomState() {
   }
 }
 
-// ---------- REST POLLING FALLBACK ----------
-// Polls the backend every POLL_INTERVAL_MS to fetch room state.
-// This guarantees friend locations show even when WebSocket is down.
 function startPollingFallback() {
   stopPollingFallback()
   pollInterval = setInterval(async () => {
@@ -573,12 +664,10 @@ function startPollingFallback() {
         destination: room.destination,
         members: room.members || [],
       })
-      // If WebSocket is still dead but polling is working, clear the error
       if (!wsConnected.value && liveError.value) {
         liveError.value = ''
       }
     } catch (e) {
-      // Polling error is silent — we don't overwrite existing error messages
       console.warn('[Poll] Failed to fetch room state:', e)
     }
   }, POLL_INTERVAL_MS)
@@ -603,13 +692,11 @@ function handleSocketStatus(status) {
     if (status.code === 4004) {
       liveError.value = 'Room link is invalid or expired'
     }
-    // Don't show error for normal close — polling fallback handles it
     return
   }
 
   if (status.type === 'error') {
     wsConnected.value = false
-    // Don't show scary error — polling will keep things working
     liveError.value = ''
   }
 }
@@ -619,7 +706,7 @@ function copyInvite() {
   navigator.clipboard.writeText(url).then(() => {
     copied.value = true
     if (isLocalOnlyHost()) {
-      shareMessage.value = `Room Code: ${props.roomId} | Share link: ${url} (Note: Use your local IP e.g. http://192.168.x.x:5173 to share with friends on mobile)`
+      shareMessage.value = `Room Link: ${url} (Use local IP e.g. http://192.168.x.x:5173 for mobile)`
     } else {
       shareMessage.value = 'Invite link copied to clipboard!'
     }
@@ -642,50 +729,81 @@ function panMap(x, y) {
 
 <style scoped>
 .tracking-view {
-  font-family: 'Segoe UI', -apple-system, sans-serif;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
   display: flex;
   flex-direction: column;
   height: 100vh;
+  background: #F8FAFC;
 }
+
+/* Header */
 .header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  background: #ffffff;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  padding: 12px 20px;
+  background: #FFFFFF;
+  border-bottom: 1px solid #E2E8F0;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
   z-index: 1000;
+}
+.header-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dest-icon {
+  font-size: 24px;
 }
 .header-left h2 {
   margin: 0;
-  font-size: 1.2rem;
+  font-size: 1.15rem;
   font-weight: 700;
-  color: #1f2937;
+  color: #0F172A;
 }
 .room-id {
   font-size: 12px;
-  color: #6b7280;
-  font-weight: 500;
+  color: #64748B;
+}
+.room-id strong {
+  color: #4F46E5;
+  font-family: monospace;
 }
 .share-btn {
-  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
   border: none;
   border-radius: 20px;
-  background: linear-gradient(135deg, #4f46e5, #7c3aed);
-  color: #ffffff;
+  background: linear-gradient(135deg, #4F46E5, #6366F1);
+  color: #FFFFFF;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 2px 6px rgba(79,70,229,0.3);
-  transition: transform 0.15s, box-shadow 0.15s;
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.35);
+  transition: all 0.2s ease;
 }
 .share-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 10px rgba(79,70,229,0.4);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.45);
 }
+
+/* Notice Banner */
+.notice-banner {
+  background: #EEF2FF;
+  color: #3730A3;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  text-align: center;
+  border-bottom: 1px solid #C7D2FE;
+}
+
+/* Map Stage */
 .map-stage {
   flex: 1;
-  min-height: 300px;
+  min-height: 320px;
   position: relative;
 }
 .map-container {
@@ -708,179 +826,313 @@ function panMap(x, y) {
 }
 .pan-btn {
   align-items: center;
-  background: #ffffff;
-  border: 1px solid #d1d5db;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-  color: #111827;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  color: #1E293B;
   cursor: pointer;
   display: flex;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 800;
   height: 36px;
   justify-content: center;
   width: 36px;
+  transition: background 0.15s;
 }
 .pan-btn:hover {
-  background: #f3f4f6;
+  background: #F1F5F9;
 }
 .pan-up { grid-column: 2; grid-row: 1; }
 .pan-left { grid-column: 1; grid-row: 2; }
 .pan-right { grid-column: 3; grid-row: 2; }
 .pan-down { grid-column: 2; grid-row: 3; }
 
-.members-list {
-  background: #ffffff;
-  padding: 14px 18px;
-  max-height: 220px;
-  overflow-y: auto;
-  box-shadow: 0 -4px 16px rgba(0,0,0,0.08);
-}
-.members-list h3 {
-  margin: 0 0 10px 0;
-  font-size: 14px;
+/* Live Status Pill Overlay */
+.live-status-pill {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  color: #FFFFFF;
+  font-size: 12px;
   font-weight: 700;
-  color: #374151;
+  padding: 6px 14px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  z-index: 700;
+}
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  background: #10B981;
+  border-radius: 50%;
+  box-shadow: 0 0 8px #10B981;
+  animation: pulse-dot 1.5s infinite;
+}
+
+/* Members Card & Leaderboard */
+.members-card {
+  background: #FFFFFF;
+  border-top: 1px solid #E2E8F0;
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.06);
+  padding: 16px 20px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+.members-header {
+  margin-bottom: 12px;
+}
+.header-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.header-title h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  color: #1E293B;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
-.member-row {
+.member-count-badge {
+  background: #F1F5F9;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+/* Members Grid */
+.members-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.member-card {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 0;
-  border-bottom: 1px solid #f3f4f6;
+  padding: 10px 14px;
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  position: relative;
+  transition: transform 0.15s, box-shadow 0.15s;
 }
-.member-dot {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
+.member-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(0,0,0,0.04);
+}
+.member-card.is-you {
+  background: #EEF2FF;
+  border-color: #C7D2FE;
+}
+.member-card.is-arrived {
+  background: #ECFDF5;
+  border-color: #A7F3D0;
+}
+
+/* Avatar Wrap & Rank Badge */
+.avatar-wrap {
+  position: relative;
   flex-shrink: 0;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
-  border: 2px solid #ffffff;
 }
-.member-info {
+.avatar-circle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  color: #FFFFFF;
+  font-weight: 800;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  border: 2px solid #FFFFFF;
+}
+.rank-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -6px;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 1px 5px;
+  border-radius: 8px;
+  border: 1.5px solid #FFFFFF;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+.rank-first {
+  background: #FEF08A;
+  color: #854D0E;
+}
+.rank-second {
+  background: #E2E8F0;
+  color: #334155;
+}
+.rank-third {
+  background: #FFEDD5;
+  color: #9A3412;
+}
+.rank-other {
+  background: #1E293B;
+  color: #F8FAFC;
+}
+
+/* Details */
+.member-details {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  flex: 1;
 }
-.member-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #111827;
-}
-.you-badge {
-  color: #4f46e5;
-  font-size: 12px;
-  font-weight: 700;
-}
-.member-sub {
+.name-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 2px;
 }
-.member-tag {
-  font-size: 10px;
+.member-name {
+  font-size: 14px;
   font-weight: 700;
+  color: #0F172A;
+}
+.you-tag {
+  background: #4F46E5;
+  color: #FFFFFF;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+.tag {
+  font-size: 10px;
+  font-weight: 800;
   padding: 2px 6px;
   border-radius: 4px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+}
+.arrived-tag {
+  background: #D1FAE5;
+  color: #065F46;
+}
+.leader-tag {
+  background: #FEF3C7;
+  color: #92400E;
+}
+.rank-tag {
+  background: #E2E8F0;
+  color: #475569;
+}
+.distance-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748B;
+}
+.distance-text.waiting {
+  color: #94A3B8;
+  font-style: italic;
+}
+
+/* Right Color Indicator Bar */
+.color-indicator-bar {
+  width: 6px;
+  height: 32px;
+  border-radius: 4px;
   flex-shrink: 0;
 }
-.member-tag.closest {
-  background: #dcfce7;
-  color: #166534;
-}
-.member-tag.furthest {
-  background: #fee2e2;
-  color: #991b1b;
-}
-.member-distance {
-  font-size: 13px;
-  color: #6b7280;
-  font-weight: 500;
-}
+
 .no-members {
-  color: #9ca3af;
+  color: #94A3B8;
   font-size: 13px;
+  text-align: center;
+  padding: 12px 0;
 }
-.error {
-  color: #ef4444;
+
+/* Banners */
+.error-banner {
+  color: #EF4444;
+  background: #FEF2F2;
   text-align: center;
   padding: 8px;
   margin: 0;
   font-size: 13px;
-  background: #fef2f2;
+  border-top: 1px solid #FEE2E2;
 }
 .location-error {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
-  flex-wrap: wrap;
 }
 .retry-btn {
   border: none;
   border-radius: 999px;
-  background: #ef4444;
-  color: #ffffff;
+  background: #EF4444;
+  color: #FFFFFF;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 10px;
 }
 .retry-btn:hover {
-  background: #dc2626;
-}
-.notice {
-  background: #eff6ff;
-  color: #1e40af;
-  font-size: 13px;
-  padding: 10px 16px;
-  text-align: center;
-  margin: 0;
-  border-bottom: 1px solid #dbeafe;
+  background: #DC2626;
 }
 </style>
 
 <style>
-/* Global Leaflet overrides */
+/* Global Leaflet Overrides */
 .avatar-marker, .dest-pin-marker {
   background: none !important;
   border: none !important;
 }
 @keyframes pulse-ring {
   0% { transform: scale(0.95); opacity: 0.8; }
-  50% { transform: scale(1.3); opacity: 0.2; }
+  50% { transform: scale(1.35); opacity: 0.15; }
   100% { transform: scale(0.95); opacity: 0.8; }
 }
+@keyframes pulse-dot {
+  0% { transform: scale(0.9); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.6; }
+  100% { transform: scale(0.9); opacity: 1; }
+}
 .dest-tooltip {
-  background: #ffffff;
-  color: #1f2937;
+  background: #FFFFFF;
+  color: #0F172A;
   border: none;
   border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.18);
-  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+  font-weight: 800;
   font-size: 13px;
   padding: 6px 10px;
 }
 .dest-tooltip::before {
-  border-top-color: #ffffff !important;
+  border-top-color: #FFFFFF !important;
 }
 .member-tooltip {
-  background: #111827;
-  color: #ffffff;
+  background: #0F172A;
+  color: #FFFFFF;
   border: none;
   border-radius: 999px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
-  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+  font-weight: 700;
   font-size: 12px;
-  padding: 5px 10px;
+  padding: 5px 11px;
   white-space: nowrap;
 }
 .member-tooltip::before {
-  border-top-color: #111827 !important;
+  border-top-color: #0F172A !important;
 }
 </style>
