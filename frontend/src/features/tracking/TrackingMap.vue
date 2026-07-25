@@ -74,6 +74,10 @@ const geoError = ref('')
 const liveError = ref('')
 const copied = ref(false)
 const shareMessage = ref('')
+const wsConnected = ref(false)
+
+let pollInterval = null
+const POLL_INTERVAL_MS = 4000
 
 // Palette of distinct, high-visibility colors for members
 const MEMBER_COLORS = [
@@ -123,6 +127,8 @@ let hasCenteredOnDestination = false
 let hasCenteredOnUser = false
 let hasFittedOnce = false
 let lastFitSignature = ''
+let lastMyLat = null
+let lastMyLng = null
 
 function getMemberColor(member) {
   if (!member) return MEMBER_COLORS[0]
@@ -413,9 +419,11 @@ onMounted(() => {
   loadInitialRoomState()
   connectWebSocket(props.roomId, props.memberId, handleRoomState, handleSocketStatus)
   beginLocationWatch()
+  startPollingFallback()
 })
 
 onBeforeUnmount(() => {
+  stopPollingFallback()
   disconnectWebSocket()
   stopWatchingLocation()
   if (map) {
@@ -431,6 +439,8 @@ function beginLocationWatch() {
   startWatchingLocation(
     (lat, lng) => {
       geoError.value = ''
+      lastMyLat = lat
+      lastMyLng = lng
       updateLocalMemberLocation(lat, lng)
 
       if (map && !hasCenteredOnUser && !hasFittedOnce) {
@@ -451,29 +461,61 @@ function handleRoomState(data) {
 
   roomData.value = data
 
-  // Enrich members with updated distances if available
-  const updatedMembers = (data.members || []).map(m => {
+  // Merge server members with local "self" data to preserve our latest GPS position
+  const serverMembers = (data.members || [])
+  const updatedMembers = serverMembers.map(m => {
+    // For ourselves, overlay our latest local GPS if server hasn't caught up yet
+    if (m.member_id === props.memberId && lastMyLat != null && lastMyLng != null) {
+      if (m.lat == null || m.lng == null) {
+        m = { ...m, lat: lastMyLat, lng: lastMyLng }
+      }
+    }
+
     let dist = m.distance_meters
     let distText = m.distance_text
     if (dist == null && m.lat != null && m.lng != null && data.destination) {
       dist = haversineDistance(m.lat, m.lng, data.destination.lat, data.destination.lng)
       distText = formatDistance(dist)
     }
+
+    // Preserve local history if server doesn't have it yet
+    const existingMember = members.value.find(em => em.member_id === m.member_id)
+    const history = (m.history && m.history.length > 0) ? m.history : (existingMember?.history || [])
+
     return {
       ...m,
+      history,
       distance_meters: dist,
       distance_text: distText,
     }
   })
 
+  // If we (self) are not in the server list yet but we have local GPS, add ourselves
+  const selfInList = updatedMembers.some(m => m.member_id === props.memberId)
+  if (!selfInList && lastMyLat != null && lastMyLng != null) {
+    const dist = data.destination ? haversineDistance(lastMyLat, lastMyLng, data.destination.lat, data.destination.lng) : null
+    updatedMembers.push({
+      member_id: props.memberId,
+      name: props.memberName || 'You',
+      lat: lastMyLat,
+      lng: lastMyLng,
+      history: [],
+      reached: dist != null && dist <= ARRIVAL_RADIUS_METERS,
+      distance_meters: dist,
+      distance_text: formatDistance(dist),
+    })
+  }
+
   members.value = updatedMembers
 
   // Destination marker
-  if (data.destination && !destMarker) {
+  if (data.destination && !destMarker && map) {
     destMarker = L.marker([data.destination.lat, data.destination.lng], { icon: destIcon })
       .bindTooltip(data.destination.name, { permanent: true, direction: 'top', offset: [0, -48], className: 'dest-tooltip' })
       .addTo(map)
   }
+
+  if (!map) return
 
   // Update member markers and polylines for all members
   const activeIds = new Set()
@@ -512,19 +554,57 @@ async function loadInitialRoomState() {
   }
 }
 
+// ---------- REST POLLING FALLBACK ----------
+// Polls the backend every POLL_INTERVAL_MS to fetch room state.
+// This guarantees friend locations show even when WebSocket is down.
+function startPollingFallback() {
+  stopPollingFallback()
+  pollInterval = setInterval(async () => {
+    try {
+      const room = await getRoom(props.roomId)
+      handleRoomState({
+        type: 'room_state',
+        destination: room.destination,
+        members: room.members || [],
+      })
+      // If WebSocket is still dead but polling is working, clear the error
+      if (!wsConnected.value && liveError.value) {
+        liveError.value = ''
+      }
+    } catch (e) {
+      // Polling error is silent — we don't overwrite existing error messages
+      console.warn('[Poll] Failed to fetch room state:', e)
+    }
+  }, POLL_INTERVAL_MS)
+}
+
+function stopPollingFallback() {
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
+}
+
 function handleSocketStatus(status) {
   if (status.type === 'open') {
+    wsConnected.value = true
     liveError.value = ''
     return
   }
 
-  if (status.type === 'close' && status.code === 4004) {
-    liveError.value = 'Room link is invalid or expired'
+  if (status.type === 'close') {
+    wsConnected.value = false
+    if (status.code === 4004) {
+      liveError.value = 'Room link is invalid or expired'
+    }
+    // Don't show error for normal close — polling fallback handles it
     return
   }
 
   if (status.type === 'error') {
-    liveError.value = 'Connecting live tracking...'
+    wsConnected.value = false
+    // Don't show scary error — polling will keep things working
+    liveError.value = ''
   }
 }
 
